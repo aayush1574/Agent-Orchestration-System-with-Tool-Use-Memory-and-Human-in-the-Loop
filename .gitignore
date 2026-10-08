@@ -36,8 +36,14 @@ yarn-error.log*
 
 # typescript
 next-env.d.ts
+*.tsbuildinfo
 /dist/
 /.wrangler/
+
+# Python caches and local deployment packages
+__pycache__/
+*.py[cod]
+*.tar.gz
 # Checkout-local execution profile and tool state; never publish them.
 /.sites-runtime/
 /.agents/
