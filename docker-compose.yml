@@ -1,0 +1,25 @@
+services:
+  api:
+    build: ./backend
+    ports: ["8000:8000"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://agentops:agentops@postgres:5432/agentops
+      CHROMA_URL: http://chroma:8000
+    depends_on: [redis, postgres, chroma]
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agentops
+      POSTGRES_PASSWORD: agentops
+      POSTGRES_DB: agentops
+    ports: ["5432:5432"]
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+  chroma:
+    image: chromadb/chroma:0.5.23
+    ports: ["8001:8000"]
+volumes:
+  postgres_data:
