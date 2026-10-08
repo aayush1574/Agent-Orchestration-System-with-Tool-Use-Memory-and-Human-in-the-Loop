@@ -45,3 +45,12 @@ pytest
 ```
 
 The default implementation uses deterministic specialists so the project works without credentials. Replace handlers in `backend/app/tools.py` with real MCP tools and configure model adapters in the orchestration layer for OpenAI/Anthropic production routing.
+
+## Production notes
+
+- Copy `.env.example` to `.env` and restrict `ALLOWED_ORIGINS` to the deployed console origin before exposing the standalone API.
+- The hosted console persists runs and approval decisions in D1 and exposes `/api/health` for readiness monitoring.
+- The FastAPI service exposes `/health/live` and `/health/ready`; configure your container platform to use them for liveness and readiness probes.
+- Approval policy is enforced for both low-confidence plans and final delivery. Background failures become explicit failed runs with trace events instead of disappearing silently.
+- Tool permissions and per-minute limits are enforced at the registry boundary. Replace demo tool handlers with authenticated MCP/API adapters and keep their secrets in your deployment secret manager.
+- Run `npm audit --omit=dev`, `npm run lint`, `npm run build`, and `pytest` in CI before deployment.

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const runs = sqliteTable("runs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -9,7 +9,7 @@ export const runs = sqliteTable("runs", {
   reviewerScore: integer("reviewer_score"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [index("idx_runs_created_at").on(table.createdAt)]);
 
 export const memories = sqliteTable("memories", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -27,4 +27,4 @@ export const decisions = sqliteTable("decisions", {
   decision: text("decision").notNull(),
   note: text("note").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [index("idx_decisions_run_id").on(table.runId)]);

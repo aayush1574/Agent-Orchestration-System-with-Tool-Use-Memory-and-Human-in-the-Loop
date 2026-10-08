@@ -75,6 +75,9 @@ class Run(BaseModel):
     traces: list[TraceEvent] = Field(default_factory=list)
     result: dict[str, Any] | None = None
     approval_level: ApprovalLevel | None = None
+    require_final_approval: bool = True
+    confidence_threshold: float = Field(default=0.75, ge=0.5, le=1)
+    error: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

@@ -14,12 +14,17 @@ class Orchestrator:
         self.memory = memory or MemoryStore()
         self.runs: dict[str, Run] = {}
 
-    def create_run(self, task: str, require_final_approval: bool = True) -> Run:
-        run = Run(task=task)
+    def create_run(self, task: str, require_final_approval: bool = True, confidence_threshold: float = 0.75) -> Run:
+        run = Run(task=task, require_final_approval=require_final_approval, confidence_threshold=confidence_threshold)
         run.plan = self._plan(task)
-        run.status = RunStatus.RUNNING
         run.progress = 10
         run.traces.append(TraceEvent(agent=AgentRole.SUPERVISOR, event="plan_created", output={"subtasks": len(run.plan.subtasks), "confidence": run.plan.confidence}))
+        if run.plan.confidence < confidence_threshold:
+            run.status = RunStatus.WAITING_APPROVAL
+            run.approval_level = ApprovalLevel.APPROVE_PLAN
+            run.traces.append(TraceEvent(agent=AgentRole.SUPERVISOR, event="human_escalation", status="waiting", output={"reason": "low_plan_confidence", "confidence": run.plan.confidence, "threshold": confidence_threshold}))
+        else:
+            run.status = RunStatus.RUNNING
         self.runs[run.id] = run
         return run
 
@@ -32,6 +37,8 @@ class Orchestrator:
 
     async def execute(self, run_id: str) -> Run:
         run = self.runs[run_id]
+        if run.status != RunStatus.RUNNING:
+            raise ValueError("Run is not ready for execution")
         assert run.plan
         started = time.perf_counter()
         research = run.plan.subtasks[0]
@@ -47,24 +54,46 @@ class Orchestrator:
         run.plan.subtasks[2].output = {"format": "executive_brief", "citations": 18}
         run.plan.subtasks[3].status = "complete"
         run.plan.subtasks[3].output = {"score": 92, "recommendation": "approve"}
-        run.progress = 86
-        run.status = RunStatus.WAITING_APPROVAL
-        run.approval_level = ApprovalLevel.APPROVE_ACTION
-        run.traces.append(TraceEvent(agent=AgentRole.REVIEWER, event="human_escalation", status="waiting", output={"score": 92, "level": run.approval_level.value}))
+        if run.require_final_approval:
+            run.progress = 86
+            run.status = RunStatus.WAITING_APPROVAL
+            run.approval_level = ApprovalLevel.APPROVE_ACTION
+            run.traces.append(TraceEvent(agent=AgentRole.REVIEWER, event="human_escalation", status="waiting", output={"score": 92, "level": run.approval_level.value}))
+        else:
+            self._complete(run)
         return run
+
+    async def execute_safely(self, run_id: str) -> Run:
+        try:
+            return await self.execute(run_id)
+        except Exception as exc:
+            run = self.runs[run_id]
+            run.status = RunStatus.FAILED
+            run.error = str(exc)
+            run.traces.append(TraceEvent(agent=AgentRole.SUPERVISOR, event="execution_failed", status="error", output={"error": str(exc)}))
+            return run
+
+    def _complete(self, run: Run) -> None:
+        run.status, run.progress, run.approval_level = RunStatus.COMPLETE, 100, None
+        run.result = {"delivered": True, "summary": "Executive brief delivered", "reviewer_score": 92}
+        self.memory.remember(Memory("Market research workflow", "Parallel primary-source research followed by estimate reconciliation worked well", "strategy", 0.9))
 
     def decide(self, run_id: str, decision: ApprovalDecision) -> Run:
         run = self.runs[run_id]
         if run.status != RunStatus.WAITING_APPROVAL:
             raise ValueError("Run is not waiting for approval")
         if decision.decision == "approve":
-            run.status, run.progress = RunStatus.COMPLETE, 100
-            run.result = {"delivered": True, "summary": "Executive brief delivered", "reviewer_score": 92}
-            self.memory.remember(Memory("Market research workflow", "Parallel primary-source research followed by estimate reconciliation worked well", "strategy", 0.9))
+            if run.approval_level == ApprovalLevel.APPROVE_PLAN:
+                run.status, run.approval_level = RunStatus.RUNNING, None
+            else:
+                self._complete(run)
         elif decision.decision == "take_over":
-            run.status = RunStatus.COMPLETE
+            run.status, run.progress, run.approval_level = RunStatus.COMPLETE, 100, None
             run.result = {"delivered": False, "taken_over": True, "note": decision.note}
+        elif decision.decision == "reject":
+            run.status, run.approval_level = RunStatus.FAILED, None
+            run.error = decision.note or "Rejected by human reviewer"
         else:
-            run.status, run.progress = RunStatus.RUNNING, 74
+            run.status, run.progress, run.approval_level = RunStatus.RUNNING, 74, None
         run.traces.append(TraceEvent(agent=AgentRole.SUPERVISOR, event=f"human_decision:{decision.decision}", input={"note": decision.note}))
         return run

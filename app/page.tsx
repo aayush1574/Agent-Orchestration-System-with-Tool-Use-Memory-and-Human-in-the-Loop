@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  Activity, Archive, ArrowUpRight, Bot, BrainCircuit, Check, ChevronRight, CircleDollarSign,
-  Clock3, Code2, Database, FileSearch, Gauge, GitBranch, History, LayoutDashboard, Menu,
+  Activity, Archive, Bot, BrainCircuit, Check, ChevronRight, CircleDollarSign,
+  Clock3, Database, FileSearch, Gauge, GitBranch, History, LayoutDashboard, Menu,
   MessageSquareText, Network, Pause, Play, RefreshCw, Search, Send, ShieldCheck, Sparkles,
-  SquareStack, Trash2, TriangleAlert, Wrench, Workflow, X, Zap,
+  SquareStack, Trash2, Wrench, Workflow, X, Zap,
 } from "lucide-react";
 import { Toaster, toast } from "sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -14,7 +14,6 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 type View = "overview" | "approvals" | "memory" | "traces";
 type RunState = "running" | "review" | "complete";
 
-const lime = "#a5ff38";
 const nav = [
   { id: "overview" as View, label: "Live runs", icon: LayoutDashboard },
   { id: "approvals" as View, label: "Approvals", icon: ShieldCheck, badge: 1 },
@@ -67,36 +66,80 @@ export default function Home() {
   const [traceSearch, setTraceSearch] = useState("");
   const [approvalNote, setApprovalNote] = useState("");
   const [persistedRunId, setPersistedRunId] = useState<number | null>(null);
+  const persistedRunIdRef = useRef<number | null>(null);
+  const approvalNoteRef = useRef("");
+  const runStateRef = useRef<RunState>("review");
+  const runTitleRef = useRef(runTitle);
 
-  const approve = useCallback(() => {
+  useEffect(() => {
+    persistedRunIdRef.current = persistedRunId;
+    approvalNoteRef.current = approvalNote;
+    runStateRef.current = runState;
+    runTitleRef.current = runTitle;
+  }, [approvalNote, persistedRunId, runState, runTitle]);
+
+  useEffect(() => {
+    let active = true;
+    void fetch("/api/runs", { headers: { accept: "application/json" } })
+      .then(async response => response.ok ? response.json() as Promise<{ runs?: Array<{ id: number; task: string; status: string; progress: number }> }> : null)
+      .then(data => {
+        const latest = data?.runs?.[0];
+        if (!active || !latest) return;
+        setPersistedRunId(latest.id);
+        setRunTitle(latest.task.length > 58 ? `${latest.task.slice(0, 58)}…` : latest.task);
+        setProgress(latest.progress);
+        setRunState(latest.status === "complete" ? "complete" : latest.status === "review" ? "review" : "running");
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  const approve = useCallback(async () => {
+    const runId = persistedRunIdRef.current;
+    if (runId) {
+      try {
+        const response = await fetch("/api/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "approve", runId, note: approvalNoteRef.current }) });
+        if (!response.ok) throw new Error("Approval could not be saved");
+      } catch {
+        toast.error("Approval wasn’t saved", { description: "The run is still waiting. Check the connection and try again." });
+        return false;
+      }
+    }
     setRunState("complete"); setProgress(100); setApprovalOpen(false);
     toast.success("Deliverable approved", { description: "The supervisor completed the run and saved its lessons to memory." });
-    if (persistedRunId) void fetch("/api/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "approve", runId: persistedRunId, note: approvalNote }) }).catch(() => undefined);
-  }, [approvalNote, persistedRunId]);
+    return true;
+  }, []);
 
-  const startRun = useCallback((title?: string) => {
-    const clean = (title ?? task).trim(); if (!clean) return;
+  const startRun = useCallback((title: string) => {
+    const clean = title.trim(); if (clean.length < 10) { toast.error("Add a little more detail", { description: "Tasks must contain at least 10 characters." }); return; }
     setRunTitle(clean.length > 58 ? `${clean.slice(0, 58)}…` : clean); setRunState("running"); setProgress(12); setNewRunOpen(false); setView("overview");
-    void fetch("/api/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "start", task: clean }) }).then(response => response.ok ? response.json() as Promise<{ run?: { id?: number } }> : null).then(data => { if (data?.run?.id) setPersistedRunId(data.run.id); }).catch(() => undefined);
+    void fetch("/api/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "start", task: clean }) })
+      .then(async response => {
+        if (!response.ok) throw new Error("Run could not be saved");
+        return response.json() as Promise<{ run?: { id?: number } }>;
+      })
+      .then(data => { if (data?.run?.id) setPersistedRunId(data.run.id); })
+      .catch(() => toast.warning("Running without persistence", { description: "This run will continue, but its history may not be saved." }));
     toast.info("Orchestration started", { description: "The supervisor is decomposing the request." });
     [31, 55, 74, 86].forEach((value, index) => window.setTimeout(() => setProgress(value), 900 * (index + 1)));
     window.setTimeout(() => { setRunState("review"); toast.warning("Human review requested", { description: "The final brief is ready for approval." }); }, 4400);
-  }, [task]);
+  }, []);
 
   useEffect(() => {
     const context = (document as Document & { modelContext?: { registerTool?: (tool: unknown, options?: { signal: AbortSignal }) => void | Promise<void> } }).modelContext;
     if (!context?.registerTool) return;
     const lifecycle = new AbortController();
     const tools = [
-      { name: "start_orchestration", title: "Start orchestration", description: "Start a new multi-agent workflow for a task and update the visible run.", inputSchema: { type: "object", properties: { task: { type: "string", minLength: 1 } }, required: ["task"], additionalProperties: false }, annotations: { readOnlyHint: false, untrustedContentHint: false }, execute: (input: unknown) => { const value = input as { task?: string }; if (!value.task?.trim()) throw new Error("task is required"); startRun(value.task); return { status: "running", task: value.task }; } },
-      { name: "approve_pending_delivery", title: "Approve pending delivery", description: "Approve the currently pending final deliverable and complete the run.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: false, untrustedContentHint: false }, execute: () => { if (runState !== "review") throw new Error("no delivery is awaiting approval"); approve(); return { status: "complete", run: runTitle }; } },
+      { name: "start_orchestration", title: "Start orchestration", description: "Start a new multi-agent workflow for a task and update the visible run.", inputSchema: { type: "object", properties: { task: { type: "string", minLength: 10, maxLength: 10000 } }, required: ["task"], additionalProperties: false }, annotations: { readOnlyHint: false, untrustedContentHint: false }, execute: (input: unknown) => { const value = input as { task?: string }; if (!value.task?.trim() || value.task.trim().length < 10) throw new Error("task must contain at least 10 characters"); startRun(value.task); return { status: "running", task: value.task }; } },
+      { name: "approve_pending_delivery", title: "Approve pending delivery", description: "Approve the currently pending final deliverable and complete the run.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: false, untrustedContentHint: false }, execute: async () => { if (runStateRef.current !== "review") throw new Error("no delivery is awaiting approval"); if (!await approve()) throw new Error("approval could not be saved"); return { status: "complete", run: runTitleRef.current }; } },
     ];
     tools.forEach((tool) => { try { void Promise.resolve(context.registerTool?.(tool, { signal: lifecycle.signal })).catch(() => undefined); } catch { /* unsupported preview */ } });
     return () => lifecycle.abort();
-  }, [approve, runState, runTitle, startRun]);
+  }, [approve, startRun]);
 
   const filteredTraces = useMemo(() => traceNodes.filter(n => `${n.agent} ${n.title}`.toLowerCase().includes(traceSearch.toLowerCase())), [traceSearch]);
   const statusLabel = runState === "complete" ? "COMPLETED" : runState === "review" ? "AWAITING APPROVAL" : "RUNNING";
+  const runReference = persistedRunId ? `Run #AO-${String(persistedRunId).padStart(4, "0")}` : "Run #AO-2841";
   const agentState = (index: number) => runState === "complete" ? "Complete" : runState === "review" ? (index < 3 ? "Complete" : "Needs review") : progress > [10, 34, 62, 80][index] ? (index === 3 ? "Reviewing" : "Complete") : index === 0 ? "Planning" : "Queued";
 
   return <main className="min-h-screen bg-[#070b12] text-[#edf2f7]"><Toaster position="bottom-right" theme="dark" toastOptions={{ style: { background: "#111925", borderColor: "#ffffff1a", color: "#edf2f7" } }} />
@@ -119,7 +162,7 @@ export default function Home() {
             <div className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="eyebrow">Orchestration overview</p><h1 className="mt-2 text-3xl font-semibold tracking-[-.045em] lg:text-4xl">Good morning, operator.</h1><p className="mt-2 text-sm text-slate-500">Your agent network is healthy and one decision needs attention.</p></div><button onClick={() => setNewRunOpen(true)} className="primary-btn"><Play size={14} fill="currentColor" /> New orchestration</button></div>
             <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Metric label="Success rate" value="94.2%" delta="+2.8%" icon={Activity} /><Metric label="Active agents" value="4 / 6" delta="2 available" icon={Bot} /><Metric label="Median latency" value="8.4s" delta="−1.2s" icon={Clock3} /><Metric label="Cost today" value="$12.84" delta="within budget" icon={CircleDollarSign} /></div>
             <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.55fr)_380px]">
-              <article className="panel overflow-hidden"><div className="flex flex-col justify-between gap-4 border-b border-white/8 p-5 sm:flex-row sm:items-start lg:p-6"><div><div className="flex flex-wrap items-center gap-2"><span className={`status ${runState === "review" ? "status-amber" : "status-lime"}`}>{statusLabel}</span><span className="text-xs text-slate-600">Run #AO-2841</span></div><h2 className="mt-4 text-xl font-semibold tracking-tight">{runTitle}</h2><p className="mt-1 text-sm text-slate-500">Supervisor · started 2m ago · guarded mode</p></div><button onClick={() => toast.info(runState === "running" ? "Run paused" : "Trace opened")} className="ghost-btn">{runState === "running" ? <Pause size={14} /> : <History size={14} />}{runState === "running" ? "Pause" : "History"}</button></div>
+              <article className="panel overflow-hidden"><div className="flex flex-col justify-between gap-4 border-b border-white/8 p-5 sm:flex-row sm:items-start lg:p-6"><div><div className="flex flex-wrap items-center gap-2"><span className={`status ${runState === "review" ? "status-amber" : "status-lime"}`}>{statusLabel}</span><span className="text-xs text-slate-600">{runReference}</span></div><h2 className="mt-4 text-xl font-semibold tracking-tight">{runTitle}</h2><p className="mt-1 text-sm text-slate-500">Supervisor · started 2m ago · guarded mode</p></div><button onClick={() => toast.info(runState === "running" ? "Run paused" : "Trace opened")} className="ghost-btn">{runState === "running" ? <Pause size={14} /> : <History size={14} />}{runState === "running" ? "Pause" : "History"}</button></div>
                 <div className="p-5 lg:p-6"><div className="mb-3 flex items-center justify-between text-xs"><span className="font-medium">Execution progress</span><span className="text-slate-500">{progress}%</span></div><div className="mb-6 h-1.5 overflow-hidden rounded-full bg-white/7"><div className="h-full rounded-full bg-[#a5ff38] transition-all duration-700" style={{ width: `${progress}%` }} /></div><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><AgentCard name="Supervisor" role="Planning & routing" status={agentState(0)} icon={Workflow} active={runState === "running" && progress < 34} /><AgentCard name="Research" role="Source discovery" status={agentState(1)} icon={FileSearch} active={runState === "running" && progress >= 34 && progress < 62} /><AgentCard name="Analysis" role="Market synthesis" status={agentState(2)} icon={Gauge} active={runState === "running" && progress >= 62} /><AgentCard name="Reviewer" role="Quality gate" status={agentState(3)} icon={ShieldCheck} active={runState === "review"} /></div></div>
                 <div className="grid border-t border-white/8 sm:grid-cols-3"><div className="run-stat"><span>Tool calls</span><strong>12</strong></div><div className="run-stat"><span>Tokens</span><strong>8,462</strong></div><div className="run-stat"><span>Est. cost</span><strong>$0.84</strong></div></div>
               </article>
@@ -128,7 +171,7 @@ export default function Home() {
             </div>
           </>}
 
-          {view === "approvals" && <><PageHeader eyebrow="Human-in-the-loop" title="Approval queue" copy="Review agent decisions at exactly the moments your policy requires." action={<span className="status status-amber">1 PENDING</span>} /><div className="grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_360px]"><article className="panel"><div className="border-b border-white/8 p-5"><div className="flex items-start justify-between gap-4"><div><span className="status status-amber">APPROVE DELIVERY</span><h2 className="mt-4 text-lg font-semibold">{runTitle}</h2><p className="mt-1 text-xs text-slate-500">Requested by Reviewer · Run #AO-2841 · 2 minutes ago</p></div><ShieldCheck className="text-amber-300" /></div></div><div className="p-5"><div className="grid gap-3 sm:grid-cols-3"><Score label="Quality score" value="92 / 100" /><Score label="Confidence" value="High · 91%" /><Score label="Policy" value="Final delivery" /></div><h3 className="mt-6 text-sm font-semibold">Reviewer’s reasoning</h3><p className="mt-2 text-sm leading-6 text-slate-400">The memo answers the requested market-sizing question, distinguishes reported figures from modeled estimates, and includes primary citations for each material claim. The variance range is clearly disclosed.</p><div className="mt-5 rounded-2xl border border-white/8 bg-[#090e16] p-4"><p className="text-xs font-medium text-slate-400">Proposed action</p><p className="mt-2 text-sm">Deliver the executive brief and consolidate the market-sizing strategy into long-term memory.</p></div><div className="mt-6 flex flex-wrap gap-2"><button onClick={approve} className="primary-btn"><Check size={14} /> Approve & deliver</button><button onClick={() => setApprovalOpen(true)} className="ghost-btn"><MessageSquareText size={14} /> Modify</button><button onClick={() => { setRunState("running"); toast.info("Returned to reviewer"); }} className="danger-btn"><X size={14} /> Reject</button></div></div></article><PolicyCard /></div></>}
+          {view === "approvals" && <><PageHeader eyebrow="Human-in-the-loop" title="Approval queue" copy="Review agent decisions at exactly the moments your policy requires." action={<span className="status status-amber">1 PENDING</span>} /><div className="grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_360px]"><article className="panel"><div className="border-b border-white/8 p-5"><div className="flex items-start justify-between gap-4"><div><span className="status status-amber">APPROVE DELIVERY</span><h2 className="mt-4 text-lg font-semibold">{runTitle}</h2><p className="mt-1 text-xs text-slate-500">Requested by Reviewer · {runReference} · 2 minutes ago</p></div><ShieldCheck className="text-amber-300" /></div></div><div className="p-5"><div className="grid gap-3 sm:grid-cols-3"><Score label="Quality score" value="92 / 100" /><Score label="Confidence" value="High · 91%" /><Score label="Policy" value="Final delivery" /></div><h3 className="mt-6 text-sm font-semibold">Reviewer’s reasoning</h3><p className="mt-2 text-sm leading-6 text-slate-400">The memo answers the requested market-sizing question, distinguishes reported figures from modeled estimates, and includes primary citations for each material claim. The variance range is clearly disclosed.</p><div className="mt-5 rounded-2xl border border-white/8 bg-[#090e16] p-4"><p className="text-xs font-medium text-slate-400">Proposed action</p><p className="mt-2 text-sm">Deliver the executive brief and consolidate the market-sizing strategy into long-term memory.</p></div><div className="mt-6 flex flex-wrap gap-2"><button onClick={() => void approve()} className="primary-btn"><Check size={14} /> Approve & deliver</button><button onClick={() => setApprovalOpen(true)} className="ghost-btn"><MessageSquareText size={14} /> Modify</button><button onClick={() => { setRunState("running"); toast.info("Returned to reviewer"); }} className="danger-btn"><X size={14} /> Reject</button></div></div></article><PolicyCard /></div></>}
 
           {view === "memory" && <><PageHeader eyebrow="Persistent intelligence" title="Memory library" copy="Inspect what the system learned, how often it helps, and when it should expire." action={<button onClick={() => toast.success("Memory consolidated", { description: "Two overlapping workflow memories were merged." })} className="ghost-btn"><SquareStack size={14} /> Consolidate</button>} /><div className="mb-4 grid gap-3 sm:grid-cols-3"><Metric label="Stored memories" value={String(memories.length + 124)} delta="+12 this week" icon={Archive} /><Metric label="Retrieval precision" value="89.4%" delta="+4.1%" icon={Search} /><Metric label="Plan improvement" value="23%" delta="vs. no memory" icon={BrainCircuit} /></div><div className="grid gap-3">{memories.map(memory => <article key={memory.id} className="panel flex flex-col gap-4 p-5 md:flex-row md:items-center"><div className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-white/5 ${memory.color}`}><BrainCircuit size={18} /></div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h2 className="text-sm font-semibold">{memory.title}</h2><span className="rounded-full bg-white/6 px-2 py-0.5 text-[10px] uppercase tracking-wider text-slate-500">{memory.scope}</span></div><p className="mt-2 max-w-3xl text-xs leading-5 text-slate-500">{memory.detail}</p></div><div className="flex items-center gap-6"><div><p className="text-lg font-semibold">{memory.score}</p><p className="text-[10px] uppercase tracking-wider text-slate-600">Importance</p></div><div><p className="text-sm font-medium">{memory.used}</p><p className="text-[10px] uppercase tracking-wider text-slate-600">Retrieved</p></div><button onClick={() => { setMemories(items => items.filter(x => x.id !== memory.id)); toast.success("Memory deleted"); }} className="rounded-lg p-2 text-slate-600 hover:bg-red-400/10 hover:text-red-300" aria-label={`Delete ${memory.title}`}><Trash2 size={15} /></button></div></article>)}</div></>}
 
@@ -137,13 +180,13 @@ export default function Home() {
       </section>
     </div>
 
-    <Dialog open={newRunOpen} onOpenChange={setNewRunOpen}><DialogContent className="border-white/10 bg-[#0d131d] text-white sm:max-w-xl"><DialogHeader><DialogTitle>Start a new orchestration</DialogTitle><DialogDescription>Describe the outcome. The supervisor will build a plan, route work, and escalate only when policy requires it.</DialogDescription></DialogHeader><textarea value={task} onChange={e => setTask(e.target.value)} rows={6} className="mt-2 resize-none rounded-2xl border border-white/10 bg-[#080d14] p-4 text-sm leading-6 outline-none focus:border-[#a5ff38]/50" /><div className="flex flex-wrap gap-2">{["Web research", "Data analysis", "Cited brief"].map(tag => <span key={tag} className="rounded-full border border-white/8 px-2.5 py-1 text-[11px] text-slate-500">{tag}</span>)}</div><DialogFooter><button onClick={() => setNewRunOpen(false)} className="ghost-btn">Cancel</button><button onClick={() => startRun()} className="primary-btn"><Play size={14} fill="currentColor" /> Start run</button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={newRunOpen} onOpenChange={setNewRunOpen}><DialogContent className="border-white/10 bg-[#0d131d] text-white sm:max-w-xl"><DialogHeader><DialogTitle>Start a new orchestration</DialogTitle><DialogDescription>Describe the outcome. The supervisor will build a plan, route work, and escalate only when policy requires it.</DialogDescription></DialogHeader><textarea value={task} onChange={e => setTask(e.target.value)} rows={6} maxLength={10000} aria-label="Task description" className="mt-2 resize-none rounded-2xl border border-white/10 bg-[#080d14] p-4 text-sm leading-6 outline-none focus:border-[#a5ff38]/50" /><div className="flex flex-wrap gap-2">{["Web research", "Data analysis", "Cited brief"].map(tag => <span key={tag} className="rounded-full border border-white/8 px-2.5 py-1 text-[11px] text-slate-500">{tag}</span>)}</div><DialogFooter><button onClick={() => setNewRunOpen(false)} className="ghost-btn">Cancel</button><button onClick={() => startRun(task)} className="primary-btn"><Play size={14} fill="currentColor" /> Start run</button></DialogFooter></DialogContent></Dialog>
 
-    <Dialog open={approvalOpen} onOpenChange={setApprovalOpen}><DialogContent className="border-white/10 bg-[#0d131d] text-white sm:max-w-xl"><DialogHeader><DialogTitle>Review delivery decision</DialogTitle><DialogDescription>Approve the proposed output, send guidance back to the agent, or reject this path.</DialogDescription></DialogHeader><div className="rounded-2xl border border-amber-300/20 bg-amber-300/5 p-4"><div className="flex items-center justify-between"><span className="text-xs font-semibold text-amber-300">Reviewer score</span><strong>92 / 100</strong></div><div className="mt-3 space-y-2"><EmptyLine /><EmptyLine width="88%" /><EmptyLine width="72%" /></div></div><label className="text-xs font-medium text-slate-400">Optional instruction</label><textarea value={approvalNote} onChange={e => setApprovalNote(e.target.value)} rows={3} placeholder="Ask the agent to revise a detail before delivery…" className="resize-none rounded-xl border border-white/10 bg-[#080d14] p-3 text-sm outline-none focus:border-[#a5ff38]/50" /><DialogFooter><button onClick={() => { setApprovalOpen(false); setRunState("running"); toast.info("Sent back for revision", { description: approvalNote || "The reviewer will make another pass." }); }} className="ghost-btn"><Send size={14} /> Send revision</button><button onClick={approve} className="primary-btn"><Check size={14} /> Approve & deliver</button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={approvalOpen} onOpenChange={setApprovalOpen}><DialogContent className="border-white/10 bg-[#0d131d] text-white sm:max-w-xl"><DialogHeader><DialogTitle>Review delivery decision</DialogTitle><DialogDescription>Approve the proposed output, send guidance back to the agent, or reject this path.</DialogDescription></DialogHeader><div className="rounded-2xl border border-amber-300/20 bg-amber-300/5 p-4"><div className="flex items-center justify-between"><span className="text-xs font-semibold text-amber-300">Reviewer score</span><strong>92 / 100</strong></div><div className="mt-3 space-y-2"><EmptyLine /><EmptyLine width="88%" /><EmptyLine width="72%" /></div></div><label htmlFor="approval-note" className="text-xs font-medium text-slate-400">Optional instruction</label><textarea id="approval-note" value={approvalNote} onChange={e => setApprovalNote(e.target.value)} rows={3} maxLength={2000} placeholder="Ask the agent to revise a detail before delivery…" className="resize-none rounded-xl border border-white/10 bg-[#080d14] p-3 text-sm outline-none focus:border-[#a5ff38]/50" /><DialogFooter><button onClick={() => { setApprovalOpen(false); setRunState("running"); toast.info("Sent back for revision", { description: approvalNote || "The reviewer will make another pass." }); }} className="ghost-btn"><Send size={14} /> Send revision</button><button onClick={() => void approve()} className="primary-btn"><Check size={14} /> Approve & deliver</button></DialogFooter></DialogContent></Dialog>
   </main>;
 }
 
-function PageHeader({ eyebrow, title, copy, action }: { eyebrow: string; title: string; copy: string; action: React.ReactNode }) { return <div className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="eyebrow">{eyebrow}</p><h1 className="mt-2 text-3xl font-semibold tracking-[-.045em] lg:text-4xl">{title}</h1><p className="mt-2 text-sm text-slate-500">{copy}</p></div><div>{action}</div></div>; }
+function PageHeader({ eyebrow, title, copy, action }: { eyebrow: string; title: string; copy: string; action: ReactNode }) { return <div className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="eyebrow">{eyebrow}</p><h1 className="mt-2 text-3xl font-semibold tracking-[-.045em] lg:text-4xl">{title}</h1><p className="mt-2 text-sm text-slate-500">{copy}</p></div><div>{action}</div></div>; }
 function Score({ label, value }: { label: string; value: string }) { return <div className="rounded-xl border border-white/8 bg-[#090e16] p-3"><p className="text-[10px] font-medium uppercase tracking-wider text-slate-600">{label}</p><p className="mt-2 text-sm font-semibold">{value}</p></div>; }
 function CodePanel({ label, text }: { label: string; text: string }) { return <div className="rounded-xl border border-white/8 bg-[#080d14] p-4"><p className="text-[10px] font-semibold tracking-[.16em] text-slate-600">{label}</p><p className="mt-3 font-mono text-xs leading-6 text-slate-400">{text}</p></div>; }
 function PolicyCard() { return <aside className="panel p-5"><div className="flex items-center gap-3"><div className="grid h-10 w-10 place-items-center rounded-xl bg-cyan-400/10 text-cyan-300"><ShieldCheck size={17} /></div><div><h2 className="text-sm font-semibold">Escalation policy</h2><p className="text-xs text-slate-500">Guarded execution</p></div></div><div className="mt-6 space-y-5">{[["Confidence below 75%", "Approve plan"], ["Sensitive external action", "Approve action"], ["Final user deliverable", "Approve delivery"], ["Two repeated failures", "Take over"]].map(([trigger, level]) => <div key={trigger}><p className="text-xs font-medium">{trigger}</p><p className="mt-1 text-[11px] text-slate-600">{level}</p></div>)}</div></aside>; }

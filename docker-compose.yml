@@ -1,25 +1,46 @@
 services:
   api:
     build: ./backend
+    restart: unless-stopped
     ports: ["8000:8000"]
     environment:
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: postgresql://agentops:agentops@postgres:5432/agentops
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agentops}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-agentops}
       CHROMA_URL: http://chroma:8000
-    depends_on: [redis, postgres, chroma]
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      chroma:
+        condition: service_started
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: agentops
-      POSTGRES_PASSWORD: agentops
-      POSTGRES_DB: agentops
+      POSTGRES_USER: ${POSTGRES_USER:-agentops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-agentops}
     ports: ["5432:5432"]
     volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentops} -d ${POSTGRES_DB:-agentops}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
   chroma:
     image: chromadb/chroma:0.5.23
+    restart: unless-stopped
     ports: ["8001:8000"]
 volumes:
   postgres_data:

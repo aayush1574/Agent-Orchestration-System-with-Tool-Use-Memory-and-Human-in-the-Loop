@@ -34,6 +34,10 @@ class ToolRegistry:
             raise ValueError(f"Tool already registered: {definition.name}")
         self._tools[definition.name] = definition
 
+    @property
+    def registered_count(self) -> int:
+        return len(self._tools)
+
     async def invoke(self, name: str, agent: AgentRole, **inputs: Any) -> dict[str, Any]:
         if name not in self._tools:
             raise KeyError(f"Unknown tool: {name}")
