@@ -2,6 +2,8 @@
 
 A portfolio-ready multi-agent orchestration system with dependency-aware planning, specialist routing, a permissioned tool registry, persistent memory, human approval gates, complete traces, and replay.
 
+**Live deployment:** [agentops-control-room.aayush-agentops.workers.dev](https://agentops-control-room.aayush-agentops.workers.dev)
+
 ## What is included
 
 - **Interactive control room:** start a run, watch the plan progress, approve or revise delivery, inspect memories, explore spans, and replay an execution.
@@ -35,6 +37,18 @@ The API is available at `http://127.0.0.1:8000`; OpenAPI docs are at `/docs`.
 
 ```bash
 docker compose up --build
+```
+
+## Deploy the hosted console to Cloudflare
+
+The production Worker uses Cloudflare D1 through the `DB` binding generated from
+`vite.config.ts`. After authenticating Wrangler and applying the SQL migrations,
+deploy the console with:
+
+```bash
+npx wrangler d1 execute agentops-control-room --remote --file drizzle/0000_good_makkari.sql
+npx wrangler d1 execute agentops-control-room --remote --file drizzle/0001_overjoyed_pete_wisdom.sql
+npm run deploy:cloudflare
 ```
 
 ## Test
